@@ -112,6 +112,8 @@ namespace WorkPlusApp
             }
         }
 
+
+
         public void WriteLog(string logFilePath, string logMessage)
         {
             try
