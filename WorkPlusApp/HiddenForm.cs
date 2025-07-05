@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -12,14 +11,15 @@ namespace WorkPlusApp
 {
     public class HiddenForm : Form
     {
-        private System.Threading.Timer timer;
+        private System.Threading.Timer statusTimer;
+        private System.Threading.Timer processTimer;
         private const int IdleThreshold = 30000; // 30 seconds
-        private const int FiveMinutes = 300000; // 5 minutes in milliseconds
-        private readonly string baseFolder = @"D:\WorkTest";
+        private const int StatusCheckInterval = 5000; // 5 seconds for frequent status checks
+        private const int ProcessCheckInterval = 10000; // 10 seconds for process checks
+        private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
         private readonly string usernameFile = @"C:\WorkPlus\username.txt";
         private string lastStatus = "Unknown";
         private DateTime lastStatusChangeTime = DateTime.Now;
-        private DateTime lastApiCallTime = DateTime.MinValue;
         private string lastWindowTitle = "";
         private readonly object timerLock = new object();
         private bool isRunning = false;
@@ -27,6 +27,7 @@ namespace WorkPlusApp
         private readonly DailyActivityService dailyActivityService;
         private readonly GapTrackService gapTrackService;
         private readonly ScreenshotService screenshotService;
+        private readonly ProcessService processService;
 
         public HiddenForm()
         {
@@ -41,11 +42,12 @@ namespace WorkPlusApp
                 dailyActivityService = new DailyActivityService();
                 gapTrackService = new GapTrackService();
                 screenshotService = new ScreenshotService();
+                processService = new ProcessService();
 
                 // Initialize system tray icon
                 trayIcon = new NotifyIcon
                 {
-                    Icon = SystemIcons.Application, // Use default icon to avoid issues; replace with time.ico if verified
+                    Icon = SystemIcons.Application,
                     Text = "WorkPlusApp",
                     Visible = true
                 };
@@ -53,15 +55,16 @@ namespace WorkPlusApp
                 trayIcon.ContextMenu.MenuItems.Add("Exit", OnExit);
 
                 Directory.CreateDirectory(baseFolder);
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(usernameFile));
+                Directory.CreateDirectory(Path.GetDirectoryName(usernameFile));
                 Console.WriteLine("Directories created");
 
                 // Send daily activity API request on startup
                 Task.Run(dailyActivityService.SendDailyActivityAsync).GetAwaiter().GetResult();
 
-                // Initialize timer to check every 5 minutes
-                timer = new System.Threading.Timer(async _ => await Timer_Elapsed(), null, 0, FiveMinutes);
-                Console.WriteLine("Timer initialized for 5-minute checks");
+                // Initialize timers
+                statusTimer = new System.Threading.Timer(async _ => await Timer_Elapsed(), null, 0, StatusCheckInterval);
+                processTimer = new System.Threading.Timer(async _ => await ProcessTimer_Elapsed(), null, 0, ProcessCheckInterval);
+                Console.WriteLine("Timers initialized: Status (5 seconds), Process (10 seconds)");
 
                 // Handle form closing to ensure cleanup
                 this.FormClosing += HiddenForm_FormClosing;
@@ -69,6 +72,8 @@ namespace WorkPlusApp
             catch (Exception ex)
             {
                 Console.WriteLine($"Constructor error: {ex.Message}");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Constructor error: {ex.Message}")).GetAwaiter().GetResult();
             }
         }
 
@@ -77,14 +82,14 @@ namespace WorkPlusApp
             try
             {
                 Console.WriteLine("Exit requested from system tray");
-                trayIcon.Visible = false;
-                trayIcon.Dispose();
-                timer?.Dispose();
-                Application.ExitThread(); // Forcefully exit all threads
+                Cleanup();
+                Environment.Exit(0);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error during exit: {ex.Message}");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error during exit: {ex.Message}")).GetAwaiter().GetResult();
             }
         }
 
@@ -93,13 +98,45 @@ namespace WorkPlusApp
             try
             {
                 Console.WriteLine("Form closing, cleaning up resources");
-                trayIcon.Visible = false;
-                trayIcon.Dispose();
-                timer?.Dispose();
+                Cleanup();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error during form closing: {ex.Message}");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error during form closing: {ex.Message}")).GetAwaiter().GetResult();
+            }
+        }
+
+        private void Cleanup()
+        {
+            try
+            {
+                if (trayIcon != null)
+                {
+                    trayIcon.Visible = false;
+                    trayIcon.Dispose();
+                    trayIcon = null;
+                }
+                if (statusTimer != null)
+                {
+                    statusTimer.Dispose();
+                    statusTimer = null;
+                }
+                if (processTimer != null)
+                {
+                    processTimer.Dispose();
+                    processTimer = null;
+                }
+                Console.WriteLine("Cleanup completed");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Cleanup completed")).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during cleanup: {ex.Message}");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error during cleanup: {ex.Message}")).GetAwaiter().GetResult();
             }
         }
 
@@ -115,25 +152,18 @@ namespace WorkPlusApp
                 string currentStatus = idle.TotalMilliseconds > IdleThreshold ? "Offline" : "Online";
                 string currentWindowTitle = GetActiveWindowTitle();
 
-                // Check if status has changed or 5 minutes have passed since last API call
-                TimeSpan timeSinceLastApiCall = DateTime.Now - lastApiCallTime;
-                if (currentStatus != lastStatus || timeSinceLastApiCall.TotalMilliseconds >= FiveMinutes)
+                // Trigger API call and screenshot only on status change
+                if (currentStatus != lastStatus)
                 {
                     string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                    string screenshotPath = System.IO.Path.Combine(baseFolder, $"screenshot_{timestamp}.png");
-                    string logFilePath = System.IO.Path.Combine(baseFolder, "activity_log.txt");
+                    string screenshotPath = Path.Combine(baseFolder, $"screenshot_{timestamp}.png");
+                    string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
 
                     TimeSpan duration = DateTime.Now - lastStatusChangeTime;
 
-                    string logMessage;
-                    if (currentStatus == "Offline")
-                    {
-                        logMessage = $"{DateTime.Now}: User went OFFLINE after being online for {duration.TotalSeconds:F0} seconds. Last window: {currentWindowTitle}. Screenshot: {screenshotPath}";
-                    }
-                    else
-                    {
-                        logMessage = $"{DateTime.Now}: User came ONLINE after being idle for {duration.TotalSeconds:F0} seconds. Current window: {currentWindowTitle}. Screenshot: {screenshotPath}";
-                    }
+                    string logMessage = currentStatus == "Offline"
+                        ? $"{DateTime.Now}: User went OFFLINE after being online for {duration.TotalSeconds:F0} seconds. Last window: {currentWindowTitle}. Screenshot: {screenshotPath}"
+                        : $"{DateTime.Now}: User came ONLINE after being idle for {duration.TotalSeconds:F0} seconds. Current window: {currentWindowTitle}. Screenshot: {screenshotPath}";
 
                     await Task.Run(() => screenshotService.WriteLog(logFilePath, logMessage));
                     Console.WriteLine(logMessage);
@@ -141,22 +171,36 @@ namespace WorkPlusApp
                     await Task.Run(() => screenshotService.CaptureScreen(screenshotPath));
                     await screenshotService.UploadScreenshotAsync(screenshotPath);
 
-                    // Send gap track API request
                     await gapTrackService.SendGapTrackAsync(currentStatus);
 
                     lastStatus = currentStatus;
                     lastStatusChangeTime = DateTime.Now;
-                    lastApiCallTime = DateTime.Now;
                     lastWindowTitle = currentWindowTitle;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error in timer execution: " + ex.Message);
+                Console.WriteLine($"Error in timer execution: {ex.Message}");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                await Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error in timer execution: {ex.Message}"));
             }
             finally
             {
                 lock (timerLock) { isRunning = false; }
+            }
+        }
+
+        private async Task ProcessTimer_Elapsed()
+        {
+            try
+            {
+                await processService.TrackUserProcessesAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in process timer execution: {ex.Message}");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                await Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error in process timer execution: {ex.Message}"));
             }
         }
 
@@ -204,16 +248,13 @@ namespace WorkPlusApp
                 try
                 {
                     Console.WriteLine("Disposing HiddenForm resources");
-                    timer?.Dispose();
-                    if (trayIcon != null)
-                    {
-                        trayIcon.Visible = false;
-                        trayIcon.Dispose();
-                    }
+                    Cleanup();
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error disposing resources: {ex.Message}");
+                    string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                    Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error disposing resources: {ex.Message}")).GetAwaiter().GetResult();
                 }
             }
             base.Dispose(disposing);

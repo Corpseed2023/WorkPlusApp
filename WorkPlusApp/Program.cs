@@ -12,7 +12,7 @@ namespace WorkPlusApp
         [STAThread]
         static void Main()
         {
-            AllocConsole();
+            // AllocConsole(); // Comment out to hide console
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new HiddenForm());
