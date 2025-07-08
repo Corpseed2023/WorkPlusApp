@@ -17,6 +17,17 @@ namespace WorkPlusApp
         {
             try
             {
+                // Check if current time is after 7 PM IST
+                var istTimeZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
+                var currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istTimeZone);
+                if (currentTime.Hour >= 19)
+                {
+                    WriteLog(Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt"),
+                        $"{DateTime.Now}: After 7 PM IST: Skipping daily activity tracking.");
+                    Console.WriteLine("After 7 PM IST: Skipping daily activity tracking.");
+                    return;
+                }
+
                 Console.WriteLine("SendDailyActivityAsync started");
                 string email = "kaushlendra.pratap@corpseed.com"; // Default email
                 if (File.Exists(usernameFile))
@@ -41,7 +52,7 @@ namespace WorkPlusApp
                     ""date"": ""{DateTime.Now.ToString("yyyy-MM-dd")}"",
                     ""loginTime"": ""{DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ssZ")}""
                 }}";
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
                 await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Daily activity sent - Email: {email}"));
 
                 using (var client = new HttpClient())
@@ -49,12 +60,13 @@ namespace WorkPlusApp
                     var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                     var response = await client.PostAsync(apiUrl, content);
                     Console.WriteLine($"Daily activity API request sent: {jsonPayload}, Status: {response.StatusCode}");
+                    await Task.Run(() => WriteLog(logFilePath, $"Daily activity API request sent, Status: {response.StatusCode}"));
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error sending daily activity API request: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
                 await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Error sending daily activity: {ex.Message}"));
             }
         }

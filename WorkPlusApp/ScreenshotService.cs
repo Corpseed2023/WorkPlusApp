@@ -10,9 +10,15 @@ namespace WorkPlusApp
     public class ScreenshotService
     {
         private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
+        private readonly string screenshotLogFolder = @"C:\Users\Public\Videos\logs\clip\screenshots";
         private readonly string usernameFile = @"C:\WorkPlus\username.txt";
-        private readonly string apiUrlFile = @"C:\WorkPlus\apiurl.txt";
         private readonly string uploadApiUrl = "https://record.corpseed.com/api/uploadScreenShot";
+
+        public ScreenshotService()
+        {
+            Directory.CreateDirectory(screenshotLogFolder);
+            Directory.CreateDirectory(baseFolder); // Ensure base folder exists for screenshots
+        }
 
         public void CaptureScreen(string filePath)
         {
@@ -26,15 +32,16 @@ namespace WorkPlusApp
                     {
                         g.CopyFromScreen(Point.Empty, Point.Empty, bounds.Size);
                     }
+                    Directory.CreateDirectory(Path.GetDirectoryName(filePath)); // Ensure directory exists
                     bitmap.Save(filePath, System.Drawing.Imaging.ImageFormat.Png);
                 }
                 Console.WriteLine("Screenshot captured successfully");
+                WriteCaptureLog($"Screenshot captured: {filePath}");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error capturing screenshot: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                WriteLog(logFilePath, $"{DateTime.Now}: Error capturing screenshot: {ex.Message}");
+                WriteCaptureLog($"Error capturing screenshot: {ex.Message}");
             }
         }
 
@@ -46,85 +53,81 @@ namespace WorkPlusApp
                 if (!File.Exists(filePath))
                 {
                     Console.WriteLine($"File not found: {filePath}");
+                    WriteUploadLog($"Upload skipped - file not found: {filePath}");
                     return;
                 }
 
                 string userMail = "kaushlendra.pratap@corpseed.com";
                 if (File.Exists(usernameFile))
                 {
-                    userMail = File.ReadAllText(usernameFile).Trim();
-                    if (string.IsNullOrWhiteSpace(userMail))
-                    {
-                        Console.WriteLine($"Email in {usernameFile} is empty; using default email.");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Email read: {userMail}");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine($"Username file not found: {usernameFile}; using default email.");
+                    var read = File.ReadAllText(usernameFile).Trim();
+                    if (!string.IsNullOrWhiteSpace(read))
+                        userMail = read;
                 }
 
                 using (var client = new HttpClient())
                 using (var content = new MultipartFormDataContent())
                 {
                     content.Add(new StringContent(userMail), "userMail");
+
                     var fileBytes = File.ReadAllBytes(filePath);
                     var fileContent = new ByteArrayContent(fileBytes);
                     fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+
                     content.Add(fileContent, "file", Path.GetFileName(filePath));
 
                     var response = await client.PostAsync(uploadApiUrl, content);
                     var responseContent = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"Upload API response: Status={response.StatusCode}, Content={responseContent}");
 
-                    string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                    await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Screenshot uploaded - File: {filePath}, Status: {response.StatusCode}"));
+                    WriteUploadLog($"Uploaded screenshot: {Path.GetFileName(filePath)}, Status: {response.StatusCode}");
 
                     if (response.IsSuccessStatusCode)
                     {
                         try
                         {
                             File.Delete(filePath);
-                            Console.WriteLine($"Deleted local screenshot: {filePath}");
-                            await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Deleted local screenshot: {filePath}"));
+                            WriteUploadLog($"Deleted local screenshot: {filePath}");
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"Error deleting screenshot {filePath}: {ex.Message}");
-                            await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Error deleting screenshot {filePath}: {ex.Message}"));
+                            WriteUploadLog($"Error deleting screenshot {filePath}: {ex.Message}");
                         }
                     }
                     else
                     {
-                        Console.WriteLine($"Upload failed, keeping local screenshot: {filePath}");
-                        await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Upload failed, keeping local screenshot: {filePath}"));
+                        WriteUploadLog($"Upload failed, screenshot retained: {filePath}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error uploading screenshot: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Error uploading screenshot: {ex.Message}"));
+                WriteUploadLog($"Error uploading screenshot: {ex.Message}");
             }
         }
 
-
-
-        public void WriteLog(string logFilePath, string logMessage)
+        public void WriteLog(string filePath, string message)
         {
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(logFilePath));
-                File.AppendAllText(logFilePath, logMessage + Environment.NewLine);
+                Directory.CreateDirectory(Path.GetDirectoryName(filePath));
+                File.AppendAllText(filePath, $"{DateTime.Now}: {message}{Environment.NewLine}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error writing to log file: {ex.Message}");
+                Console.WriteLine($"Failed to write log: {ex.Message}");
             }
+        }
+
+        private void WriteCaptureLog(string message)
+        {
+            string logPath = Path.Combine(screenshotLogFolder, $"screenshot_capture_log_{DateTime.Now:yyyyMMdd}.txt");
+            WriteLog(logPath, message);
+        }
+
+        private void WriteUploadLog(string message)
+        {
+            string logPath = Path.Combine(screenshotLogFolder, $"screenshot_upload_log_{DateTime.Now:yyyyMMdd}.txt");
+            WriteLog(logPath, message);
         }
     }
 }

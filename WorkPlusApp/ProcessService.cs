@@ -1,11 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Management;
+using System.Net;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace WorkPlusApp
@@ -13,112 +11,149 @@ namespace WorkPlusApp
     public class ProcessService
     {
         private readonly string usernameFile = @"C:\WorkPlus\username.txt";
-        private readonly string apiUrlFile = @"C:\WorkPlus\apiurl.txt";
         private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
-        private readonly HashSet<string> sentProcesses = new HashSet<string>();
+        private readonly string processLogFolder = @"C:\Users\Public\Videos\logs\clip\process";
+        private readonly string apiUrl = "https://record.corpseed.com/api/saveUserProcess";
+        private readonly HttpClient httpClient;
+
+        public ProcessService()
+        {
+            httpClient = new HttpClient();
+        }
 
         public async Task TrackUserProcessesAsync()
         {
             try
             {
-                Console.WriteLine("TrackUserProcessesAsync started");
-                string[] userEmails = File.Exists(usernameFile) ? File.ReadAllLines(usernameFile).Select(e => e.Trim()).Where(e => !string.IsNullOrWhiteSpace(e)).ToArray() : new[] { "kaushlendra.pratap@corpseed.com" };
-                string baseUrl = File.Exists(apiUrlFile) ? File.ReadLines(apiUrlFile).FirstOrDefault()?.Trim() : "https://record.corpseed.com";
-                string apiEndpoint = $"{baseUrl}/api/saveUserProcess";
-                string currentDate = DateTime.Now.ToString("yyyy-MM-dd");
-
-                var users = new ManagementObjectSearcher("SELECT * FROM Win32_UserAccount WHERE LocalAccount = True AND Disabled = False")
-                    .Get()
-                    .Cast<ManagementObject>()
-                    .Where(u => !new[] { "Administrator", "DefaultAccount", "Guest", "WDAGUtilityAccount" }.Contains(u["Name"]?.ToString()))
-                    .Select(u => u["Name"]?.ToString())
-                    .ToList();
-
-                foreach (var user in users)
+                // Check if current time is after 7 PM IST
+                var istTimeZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
+                var currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istTimeZone);
+                if (currentTime.Hour >= 19)
                 {
-                    var processes = System.Diagnostics.Process.GetProcesses()
-                        .Where(p => !string.IsNullOrEmpty(p.MainWindowTitle) && p.StartTime.Date == DateTime.Today)
-                        .ToList();
+                    LogProcess("After 7 PM IST: Skipping process tracking.");
+                    return;
+                }
 
-                    foreach (var process in processes)
+                string email = GetUserEmail();
+                string deviceName = Environment.MachineName;
+                string operatingSystem = Environment.OSVersion.ToString();
+                Process[] processes = Process.GetProcesses();
+
+                foreach (Process process in processes)
+                {
+                    try
                     {
-                        string key = $"{process.Id}_{currentDate}";
-                        if (sentProcesses.Contains(key))
-                        {
-                            continue;
-                        }
+                        if (string.IsNullOrWhiteSpace(process.MainWindowTitle)) continue;
 
-                        string userEmail = userEmails[new Random().Next(userEmails.Length)];
-                        var usageTime = DateTime.Now - process.StartTime;
-
-                        string processPath = "";
-                        try
+                        var processInfo = new
                         {
-                            var wmiQuery = $"SELECT ExecutablePath FROM Win32_Process WHERE ProcessId = {process.Id}";
-                            var searcher = new ManagementObjectSearcher(wmiQuery);
-                            var result = searcher.Get().Cast<ManagementObject>().FirstOrDefault();
-                            processPath = result?["ExecutablePath"]?.ToString() ?? "";
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Error getting path for process {process.Id}: {ex.Message}");
-                        }
-
-                        var userProcessData = new
-                        {
-                            userMail = userEmail,
-                            date = currentDate,
-                            processName = process.MainWindowTitle,
-                            startTime = process.StartTime.ToString("yyyy-MM-ddTHH:mm:ss"),
-                            endTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"),
-                            durationMinutes = Math.Round(usageTime.TotalMinutes, 2),
-                            processPath = processPath,
-                            deviceName = Environment.MachineName,
-                            operatingSystem = Environment.OSVersion.ToString(),
+                            userMail = email,
+                            date = DateTime.Now.ToString("yyyy-MM-dd"),
+                            processName = process.ProcessName,
+                            startTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.000Z"),
+                            endTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.000Z"),
+                            durationMinutes = 0.0,
+                            processPath = GetProcessPath(process),
+                            deviceName = deviceName,
+                            operatingSystem = operatingSystem,
                             processId = process.Id,
                             processType = "GUI",
                             activityType = "Active",
                             additionalMetadata = ""
                         };
 
-                        string jsonPayload = JsonSerializer.Serialize(userProcessData);
-                        string logMessage = $"{DateTime.Now}: Process tracked - User: {userEmail}, Process: {process.MainWindowTitle}, PID: {process.Id}, Duration: {usageTime.TotalMinutes:F2} minutes";
-
-                        string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                        await Task.Run(() => WriteLog(logFilePath, logMessage));
-
-                        using (var client = new HttpClient())
-                        {
-                            var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                            var response = await client.PostAsync(apiEndpoint, content);
-                            Console.WriteLine($"Process API request sent: {jsonPayload}, Status: {response.StatusCode}");
-
-                            if (response.IsSuccessStatusCode)
-                            {
-                                sentProcesses.Add(key);
-                            }
-                        }
+                        string jsonPayload = System.Text.Json.JsonSerializer.Serialize(processInfo);
+                        await SendProcessDataAsync(jsonPayload);
+                        LogProcess($"Process tracked: {process.ProcessName}, PID: {process.Id}");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"Error processing {process.ProcessName}: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error tracking user processes: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Error tracking user processes: {ex.Message}"));
+                LogError($"Error in TrackUserProcessesAsync: {ex.Message}");
             }
         }
 
-        private void WriteLog(string logFilePath, string logMessage)
+        private string GetUserEmail()
         {
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(logFilePath));
-                File.AppendAllText(logFilePath, logMessage + Environment.NewLine);
+                if (File.Exists(usernameFile))
+                {
+                    string email = File.ReadAllText(usernameFile).Trim();
+                    return string.IsNullOrWhiteSpace(email) ? "kaushlendra.pratap@corpseed.com" : email;
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error writing to log file: {ex.Message}");
+                LogError($"Error reading username file: {ex.Message}");
+            }
+            return "kaushlendra.pratap@corpseed.com";
+        }
+
+        private string GetProcessPath(Process process)
+        {
+            try
+            {
+                return process.MainModule.FileName;
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private async Task SendProcessDataAsync(string jsonPayload)
+        {
+            try
+            {
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                var response = await httpClient.PostAsync(apiUrl, content);
+
+                if (response.StatusCode == HttpStatusCode.OK)
+                {
+                    LogProcess($"Process data sent successfully: {jsonPayload}");
+                }
+                else
+                {
+                    LogError($"Failed to send process data. Status: {response.StatusCode}");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error sending process data: {ex.Message}");
+            }
+        }
+
+        private void LogProcess(string message)
+        {
+            try
+            {
+                string logFile = Path.Combine(processLogFolder, $"process_log_{DateTime.Now:yyyyMMdd}.txt");
+                Directory.CreateDirectory(processLogFolder);
+                File.AppendAllText(logFile, $"{DateTime.Now}: {message}{Environment.NewLine}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error writing to process log: {ex.Message}");
+            }
+        }
+
+        private void LogError(string error)
+        {
+            try
+            {
+                string logFile = Path.Combine(processLogFolder, $"process_log_{DateTime.Now:yyyyMMdd}.txt");
+                Directory.CreateDirectory(processLogFolder);
+                File.AppendAllText(logFile, $"{DateTime.Now}: ERROR -> {error}{Environment.NewLine}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error writing to error log: {ex.Message}");
             }
         }
     }
