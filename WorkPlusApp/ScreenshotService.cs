@@ -17,14 +17,13 @@ namespace WorkPlusApp
         public ScreenshotService()
         {
             Directory.CreateDirectory(screenshotLogFolder);
-            Directory.CreateDirectory(baseFolder); // Ensure base folder exists for screenshots
+            Directory.CreateDirectory(baseFolder);
         }
 
         public void CaptureScreen(string filePath)
         {
             try
             {
-                Console.WriteLine($"Capturing screenshot to {filePath}");
                 Rectangle bounds = Screen.PrimaryScreen.Bounds;
                 using (Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height))
                 {
@@ -32,15 +31,13 @@ namespace WorkPlusApp
                     {
                         g.CopyFromScreen(Point.Empty, Point.Empty, bounds.Size);
                     }
-                    Directory.CreateDirectory(Path.GetDirectoryName(filePath)); // Ensure directory exists
+                    Directory.CreateDirectory(Path.GetDirectoryName(filePath));
                     bitmap.Save(filePath, System.Drawing.Imaging.ImageFormat.Png);
                 }
-                Console.WriteLine("Screenshot captured successfully");
                 WriteCaptureLog($"Screenshot captured: {filePath}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error capturing screenshot: {ex.Message}");
                 WriteCaptureLog($"Error capturing screenshot: {ex.Message}");
             }
         }
@@ -49,10 +46,8 @@ namespace WorkPlusApp
         {
             try
             {
-                Console.WriteLine($"Uploading screenshot: {filePath}");
                 if (!File.Exists(filePath))
                 {
-                    Console.WriteLine($"File not found: {filePath}");
                     WriteUploadLog($"Upload skipped - file not found: {filePath}");
                     return;
                 }
@@ -77,8 +72,6 @@ namespace WorkPlusApp
                     content.Add(fileContent, "file", Path.GetFileName(filePath));
 
                     var response = await client.PostAsync(uploadApiUrl, content);
-                    var responseContent = await response.Content.ReadAsStringAsync();
-
                     WriteUploadLog($"Uploaded screenshot: {Path.GetFileName(filePath)}, Status: {response.StatusCode}");
 
                     if (response.IsSuccessStatusCode)

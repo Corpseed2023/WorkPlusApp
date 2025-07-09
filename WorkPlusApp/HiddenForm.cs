@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -11,29 +12,35 @@ namespace WorkPlusApp
 {
     public class HiddenForm : Form
     {
-        private System.Threading.Timer statusTimer;
+        private System.Threading.Timer screenshotTimer;
         private System.Threading.Timer processTimer;
-        private const int IdleThreshold = 30000; // 30 seconds
-        private const int StatusCheckInterval = 5000; // 5 seconds for frequent status checks
-        private const int ProcessCheckInterval = 10000; // 10 seconds for process checks
-        private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
-        private readonly string usernameFile = @"C:\WorkPlus\username.txt";
+        private System.Threading.Timer statusTimer;
+
+        private const int ScreenshotInterval = 330000; // 5 minutes 30 seconds
+        private const int ProcessCheckInterval = 10000; // 10 seconds
+        private const int StatusCheckInterval = 5000;   // 5 seconds
+        private const int IdleThreshold = 240000;       // 4 minutes in milliseconds
+
         private string lastStatus = "Unknown";
         private DateTime lastStatusChangeTime = DateTime.Now;
-        private string lastWindowTitle = "";
-        private readonly object timerLock = new object();
-        private bool isRunning = false;
+
+        private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
+        private readonly string usernameFile = @"C:\WorkPlus\username.txt";
+
         private NotifyIcon trayIcon;
         private readonly DailyActivityService dailyActivityService;
         private readonly GapTrackService gapTrackService;
         private readonly ScreenshotService screenshotService;
         private readonly ProcessService processService;
 
+        private bool isStatusTimerRunning = false;
+
         public HiddenForm()
         {
             try
             {
                 Console.WriteLine("HiddenForm constructor started");
+
                 this.WindowState = FormWindowState.Minimized;
                 this.ShowInTaskbar = false;
                 this.Visible = false;
@@ -44,7 +51,7 @@ namespace WorkPlusApp
                 screenshotService = new ScreenshotService();
                 processService = new ProcessService();
 
-                // Initialize system tray icon
+                // System tray icon
                 trayIcon = new NotifyIcon
                 {
                     Icon = SystemIcons.Application,
@@ -56,137 +63,45 @@ namespace WorkPlusApp
 
                 Directory.CreateDirectory(baseFolder);
                 Directory.CreateDirectory(Path.GetDirectoryName(usernameFile));
-                Console.WriteLine("Directories created");
 
-                // Send daily activity API request on startup
+                // Initial daily activity API
                 Task.Run(dailyActivityService.SendDailyActivityAsync).GetAwaiter().GetResult();
 
-                // Initialize timers
-                statusTimer = new System.Threading.Timer(async _ => await Timer_Elapsed(), null, 0, StatusCheckInterval);
+                // Start timers
+                screenshotTimer = new System.Threading.Timer(async _ => await ScreenshotTimer_Elapsed(), null, 0, ScreenshotInterval);
                 processTimer = new System.Threading.Timer(async _ => await ProcessTimer_Elapsed(), null, 0, ProcessCheckInterval);
-                Console.WriteLine("Timers initialized: Status (5 seconds), Process (10 seconds)");
+                statusTimer = new System.Threading.Timer(async _ => await StatusTimer_Elapsed(), null, 0, StatusCheckInterval);
 
-                // Handle form closing to ensure cleanup
+                Console.WriteLine("Timers initialized");
+
                 this.FormClosing += HiddenForm_FormClosing;
+
+                // ✅ Auto-start registration
+                AddToStartup();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Constructor error: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Constructor error: {ex.Message}")).GetAwaiter().GetResult();
+                LogError($"Constructor error: {ex.Message}");
             }
         }
 
-        private void OnExit(object sender, EventArgs e)
+        private async Task ScreenshotTimer_Elapsed()
         {
             try
             {
-                Console.WriteLine("Exit requested from system tray");
-                Cleanup();
-                Environment.Exit(0);
+                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                string screenshotPath = Path.Combine(baseFolder, $"screenshot_{timestamp}.png");
+                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
+
+                screenshotService.CaptureScreen(screenshotPath);
+                await screenshotService.UploadScreenshotAsync(screenshotPath);
+                screenshotService.WriteLog(logFilePath, $"Screenshot captured and uploaded: {screenshotPath}");
+
+                Console.WriteLine($"Screenshot captured: {screenshotPath}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error during exit: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error during exit: {ex.Message}")).GetAwaiter().GetResult();
-            }
-        }
-
-        private void HiddenForm_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            try
-            {
-                Console.WriteLine("Form closing, cleaning up resources");
-                Cleanup();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error during form closing: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error during form closing: {ex.Message}")).GetAwaiter().GetResult();
-            }
-        }
-
-        private void Cleanup()
-        {
-            try
-            {
-                if (trayIcon != null)
-                {
-                    trayIcon.Visible = false;
-                    trayIcon.Dispose();
-                    trayIcon = null;
-                }
-                if (statusTimer != null)
-                {
-                    statusTimer.Dispose();
-                    statusTimer = null;
-                }
-                if (processTimer != null)
-                {
-                    processTimer.Dispose();
-                    processTimer = null;
-                }
-                Console.WriteLine("Cleanup completed");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Cleanup completed")).GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error during cleanup: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error during cleanup: {ex.Message}")).GetAwaiter().GetResult();
-            }
-        }
-
-        private async Task Timer_Elapsed()
-        {
-            if (isRunning) return;
-            lock (timerLock) { isRunning = true; }
-
-            try
-            {
-                Console.WriteLine("Timer_Elapsed started");
-                TimeSpan idle = GetIdleTime();
-                string currentStatus = idle.TotalMilliseconds > IdleThreshold ? "Offline" : "Online";
-                string currentWindowTitle = GetActiveWindowTitle();
-
-                // Trigger API call and screenshot only on status change
-                if (currentStatus != lastStatus)
-                {
-                    string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                    string screenshotPath = Path.Combine(baseFolder, $"screenshot_{timestamp}.png");
-                    string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-
-                    TimeSpan duration = DateTime.Now - lastStatusChangeTime;
-
-                    string logMessage = currentStatus == "Offline"
-                        ? $"{DateTime.Now}: User went OFFLINE after being online for {duration.TotalSeconds:F0} seconds. Last window: {currentWindowTitle}. Screenshot: {screenshotPath}"
-                        : $"{DateTime.Now}: User came ONLINE after being idle for {duration.TotalSeconds:F0} seconds. Current window: {currentWindowTitle}. Screenshot: {screenshotPath}";
-
-                    await Task.Run(() => screenshotService.WriteLog(logFilePath, logMessage));
-                    Console.WriteLine(logMessage);
-
-                    await Task.Run(() => screenshotService.CaptureScreen(screenshotPath));
-                    await screenshotService.UploadScreenshotAsync(screenshotPath);
-
-                    await gapTrackService.SendGapTrackAsync(currentStatus);
-
-                    lastStatus = currentStatus;
-                    lastStatusChangeTime = DateTime.Now;
-                    lastWindowTitle = currentWindowTitle;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error in timer execution: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                await Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error in timer execution: {ex.Message}"));
-            }
-            finally
-            {
-                lock (timerLock) { isRunning = false; }
+                LogError($"Error in screenshot timer: {ex.Message}");
             }
         }
 
@@ -194,24 +109,116 @@ namespace WorkPlusApp
         {
             try
             {
+                if (DateTime.Now.Hour >= 19)
+                {
+                    Console.WriteLine("Process tracking skipped after 7 PM.");
+                    return;
+                }
+
                 await processService.TrackUserProcessesAsync();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in process timer execution: {ex.Message}");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                await Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error in process timer execution: {ex.Message}"));
+                LogError($"Error in process timer: {ex.Message}");
             }
+        }
+
+        private async Task StatusTimer_Elapsed()
+        {
+            if (DateTime.Now.Hour >= 19)
+            {
+                Console.WriteLine("Status tracking skipped after 7 PM.");
+                return;
+            }
+
+            if (isStatusTimerRunning) return;
+            isStatusTimerRunning = true;
+
+            try
+            {
+                TimeSpan idleTime = GetIdleTime();
+                string currentStatus = idleTime.TotalMilliseconds > IdleThreshold ? "offline" : "online";
+
+                if (currentStatus != lastStatus)
+                {
+                    string logPath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
+                    string message = $"{DateTime.Now}: Status changed to {currentStatus.ToUpper()} after {(DateTime.Now - lastStatusChangeTime).TotalSeconds:F0} seconds.";
+                    screenshotService.WriteLog(logPath, message);
+                    Console.WriteLine(message);
+
+                    await gapTrackService.SendGapTrackAsync(currentStatus);
+                    lastStatus = currentStatus;
+                    lastStatusChangeTime = DateTime.Now;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error in status timer: {ex.Message}");
+            }
+            finally
+            {
+                isStatusTimerRunning = false;
+            }
+        }
+
+        private void OnExit(object sender, EventArgs e)
+        {
+            try
+            {
+                Cleanup();
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error during exit: {ex.Message}");
+            }
+        }
+
+        private void HiddenForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            try
+            {
+                Cleanup();
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error during form closing: {ex.Message}");
+            }
+        }
+
+        private void Cleanup()
+        {
+            try
+            {
+                trayIcon?.Dispose();
+                screenshotTimer?.Dispose();
+                processTimer?.Dispose();
+                statusTimer?.Dispose();
+
+                LogInfo("Cleanup completed");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error during cleanup: {ex.Message}");
+            }
+        }
+
+        private void LogError(string message)
+        {
+            Console.WriteLine(message);
+            string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
+            screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: ERROR - {message}");
+        }
+
+        private void LogInfo(string message)
+        {
+            Console.WriteLine(message);
+            string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
+            screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: {message}");
         }
 
         [DllImport("user32.dll")]
         static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
-
-        [DllImport("user32.dll")]
-        static extern IntPtr GetForegroundWindow();
-
-        [DllImport("user32.dll")]
-        static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
 
         struct LASTINPUTINFO
         {
@@ -228,36 +235,39 @@ namespace WorkPlusApp
             return TimeSpan.FromMilliseconds(idleTime);
         }
 
-        private string GetActiveWindowTitle()
-        {
-            const int nChars = 256;
-            StringBuilder Buff = new StringBuilder(nChars);
-            IntPtr handle = GetForegroundWindow();
-
-            if (GetWindowText(handle, Buff, nChars) > 0)
-            {
-                return Buff.ToString();
-            }
-            return "Unknown";
-        }
-
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                try
-                {
-                    Console.WriteLine("Disposing HiddenForm resources");
-                    Cleanup();
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error disposing resources: {ex.Message}");
-                    string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now.ToString("yyyyMMdd")}.txt");
-                    Task.Run(() => screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: Error disposing resources: {ex.Message}")).GetAwaiter().GetResult();
-                }
+                Cleanup();
             }
             base.Dispose(disposing);
+        }
+
+        private void AddToStartup()
+        {
+            try
+            {
+                string appName = "WorkPlusApp";
+                string exePath = Application.ExecutablePath;
+
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
+                {
+                    if (key.GetValue(appName) == null)
+                    {
+                        key.SetValue(appName, $"\"{exePath}\"");
+                        LogInfo("Auto-start entry added to registry.");
+                    }
+                    else
+                    {
+                        LogInfo("Auto-start entry already exists.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed to add to startup: {ex.Message}");
+            }
         }
     }
 }
