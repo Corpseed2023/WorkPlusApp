@@ -14,26 +14,31 @@ namespace WorkPlusApp
     {
         private System.Threading.Timer screenshotTimer;
         private System.Threading.Timer processTimer;
-        private System.Threading.Timer statusTimer;
+        private System.Threading.Timer idleCheckTimer;
 
         private const int ScreenshotInterval = 330000; // 5 minutes 30 seconds
         private const int ProcessCheckInterval = 10000; // 10 seconds
-        private const int StatusCheckInterval = 5000;   // 5 seconds
-        private const int IdleThreshold = 240000;       // 4 minutes in milliseconds
+        private const int IdleCheckInterval = 1000;    // 1 second for frequent idle checks
+        private const int IdleThreshold = 30000;       // 30 seconds in milliseconds
 
         private string lastStatus = "Unknown";
         private DateTime lastStatusChangeTime = DateTime.Now;
+        private DateTime lastInputTime = DateTime.Now;
 
-        private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
+        private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip\screenshots";
         private readonly string usernameFile = @"C:\WorkPlus\username.txt";
 
         private NotifyIcon trayIcon;
         private readonly DailyActivityService dailyActivityService;
         private readonly GapTrackService gapTrackService;
         private readonly ScreenshotService screenshotService;
-        private readonly ProcessService processService;
+        //private readonly ProcessService processService;
 
-        private bool isStatusTimerRunning = false;
+        private bool isIdleCheckRunning = false;
+        private IntPtr keyboardHookId = IntPtr.Zero;
+        private IntPtr mouseHookId = IntPtr.Zero;
+        private LowLevelKeyboardProc keyboardProc;
+        private LowLevelMouseProc mouseProc;
 
         public HiddenForm()
         {
@@ -49,7 +54,7 @@ namespace WorkPlusApp
                 dailyActivityService = new DailyActivityService();
                 gapTrackService = new GapTrackService();
                 screenshotService = new ScreenshotService();
-                processService = new ProcessService();
+                //processService = new ProcessService();
 
                 // System tray icon
                 trayIcon = new NotifyIcon
@@ -64,19 +69,25 @@ namespace WorkPlusApp
                 Directory.CreateDirectory(baseFolder);
                 Directory.CreateDirectory(Path.GetDirectoryName(usernameFile));
 
-                // Initial daily activity API
-                Task.Run(dailyActivityService.SendDailyActivityAsync).GetAwaiter().GetResult();
+                // Send daily activity immediately with exact login time
+                Task.Run(() => dailyActivityService.SendDailyActivityAsync(DateTime.Now)).GetAwaiter().GetResult();
+
+                // Set up low-level keyboard and mouse hooks
+                keyboardProc = KeyboardHookCallback;
+                mouseProc = MouseHookCallback;
+                keyboardHookId = SetHook(keyboardProc, WH_KEYBOARD_LL);
+                mouseHookId = SetHook(mouseProc, WH_MOUSE_LL);
 
                 // Start timers
                 screenshotTimer = new System.Threading.Timer(async _ => await ScreenshotTimer_Elapsed(), null, 0, ScreenshotInterval);
                 processTimer = new System.Threading.Timer(async _ => await ProcessTimer_Elapsed(), null, 0, ProcessCheckInterval);
-                statusTimer = new System.Threading.Timer(async _ => await StatusTimer_Elapsed(), null, 0, StatusCheckInterval);
+                idleCheckTimer = new System.Threading.Timer(async _ => await IdleCheckTimer_Elapsed(), null, 0, IdleCheckInterval);
 
-                Console.WriteLine("Timers initialized");
+                Console.WriteLine("Timers and hooks initialized");
 
                 this.FormClosing += HiddenForm_FormClosing;
 
-                // ✅ Auto-start registration
+                // Auto-start registration
                 AddToStartup();
             }
             catch (Exception ex)
@@ -89,15 +100,17 @@ namespace WorkPlusApp
         {
             try
             {
+                // Check if system is locked
+                if (IsSystemLocked())
+                {
+                    return; // Skip screenshot if system is locked
+                }
+
                 string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 string screenshotPath = Path.Combine(baseFolder, $"screenshot_{timestamp}.png");
-                string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
 
                 screenshotService.CaptureScreen(screenshotPath);
                 await screenshotService.UploadScreenshotAsync(screenshotPath);
-                screenshotService.WriteLog(logFilePath, $"Screenshot captured and uploaded: {screenshotPath}");
-
-                Console.WriteLine($"Screenshot captured: {screenshotPath}");
             }
             catch (Exception ex)
             {
@@ -115,7 +128,7 @@ namespace WorkPlusApp
                     return;
                 }
 
-                await processService.TrackUserProcessesAsync();
+                //await processService.TrackUserProcessesAsync();
             }
             catch (Exception ex)
             {
@@ -123,42 +136,86 @@ namespace WorkPlusApp
             }
         }
 
-        private async Task StatusTimer_Elapsed()
+        private async Task IdleCheckTimer_Elapsed()
         {
             if (DateTime.Now.Hour >= 19)
             {
-                Console.WriteLine("Status tracking skipped after 7 PM.");
+                Console.WriteLine("Idle tracking skipped after 7 PM.");
                 return;
             }
 
-            if (isStatusTimerRunning) return;
-            isStatusTimerRunning = true;
+            if (isIdleCheckRunning) return;
+            isIdleCheckRunning = true;
 
             try
             {
-                TimeSpan idleTime = GetIdleTime();
+                TimeSpan idleTime = DateTime.Now - lastInputTime;
                 string currentStatus = idleTime.TotalMilliseconds > IdleThreshold ? "offline" : "online";
 
                 if (currentStatus != lastStatus)
                 {
                     string logPath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
-                    string message = $"{DateTime.Now}: Status changed to {currentStatus.ToUpper()} after {(DateTime.Now - lastStatusChangeTime).TotalSeconds:F0} seconds.";
+                    string message = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: Status changed to {currentStatus.ToUpper()} after {(DateTime.Now - lastStatusChangeTime).TotalSeconds:F0} seconds.";
                     screenshotService.WriteLog(logPath, message);
                     Console.WriteLine(message);
 
-                    await gapTrackService.SendGapTrackAsync(currentStatus);
+                    // Send status update immediately
+                    await gapTrackService.SendGapTrackAsync(currentStatus, DateTime.Now);
                     lastStatus = currentStatus;
                     lastStatusChangeTime = DateTime.Now;
                 }
             }
             catch (Exception ex)
             {
-                LogError($"Error in status timer: {ex.Message}");
+                LogError($"Error in idle check timer: {ex.Message}");
             }
             finally
             {
-                isStatusTimerRunning = false;
+                isIdleCheckRunning = false;
             }
+        }
+
+        private bool IsSystemLocked()
+        {
+            IntPtr hDesktop = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+            bool isLocked = hDesktop == IntPtr.Zero;
+            if (hDesktop != IntPtr.Zero)
+            {
+                CloseDesktop(hDesktop);
+            }
+            return isLocked;
+        }
+
+        private IntPtr SetHook(Delegate proc, int hookType)
+        {
+            using (var curProcess = System.Diagnostics.Process.GetCurrentProcess())
+            using (var curModule = curProcess.MainModule)
+            {
+                return SetWindowsHookEx(hookType, proc, GetModuleHandle(curModule.ModuleName), 0);
+            }
+        }
+
+        private IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_KEYUP))
+            {
+                UpdateLastInputTime();
+            }
+            return CallNextHookEx(keyboardHookId, nCode, wParam, lParam);
+        }
+
+        private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0 && (wParam == (IntPtr)WM_MOUSEMOVE || wParam == (IntPtr)WM_LBUTTONDOWN || wParam == (IntPtr)WM_RBUTTONDOWN))
+            {
+                UpdateLastInputTime();
+            }
+            return CallNextHookEx(mouseHookId, nCode, wParam, lParam);
+        }
+
+        private void UpdateLastInputTime()
+        {
+            lastInputTime = DateTime.Now;
         }
 
         private void OnExit(object sender, EventArgs e)
@@ -190,10 +247,16 @@ namespace WorkPlusApp
         {
             try
             {
+                if (keyboardHookId != IntPtr.Zero)
+                    UnhookWindowsHookEx(keyboardHookId);
+                if (mouseHookId != IntPtr.Zero)
+                    UnhookWindowsHookEx(mouseHookId);
                 trayIcon?.Dispose();
                 screenshotTimer?.Dispose();
                 processTimer?.Dispose();
-                statusTimer?.Dispose();
+                idleCheckTimer?.Dispose();
+                // Dispose of the retry timer in ScreenshotService
+                ((System.Threading.Timer)typeof(ScreenshotService).GetField("retryTimer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(screenshotService))?.Dispose();
 
                 LogInfo("Cleanup completed");
             }
@@ -207,33 +270,45 @@ namespace WorkPlusApp
         {
             Console.WriteLine(message);
             string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
-            screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: ERROR - {message}");
+            screenshotService.WriteLog(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: ERROR - {message}");
         }
 
         private void LogInfo(string message)
         {
             Console.WriteLine(message);
             string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
-            screenshotService.WriteLog(logFilePath, $"{DateTime.Now}: {message}");
+            screenshotService.WriteLog(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: {message}");
         }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr SetWindowsHookEx(int idHook, Delegate lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool UnhookWindowsHookEx(IntPtr hhk);
 
         [DllImport("user32.dll")]
-        static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+        static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
-        struct LASTINPUTINFO
-        {
-            public uint cbSize;
-            public uint dwTime;
-        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+        static extern IntPtr GetModuleHandle(string lpModuleName);
 
-        public static TimeSpan GetIdleTime()
-        {
-            LASTINPUTINFO lastInputInfo = new LASTINPUTINFO();
-            lastInputInfo.cbSize = (uint)Marshal.SizeOf(lastInputInfo);
-            GetLastInputInfo(ref lastInputInfo);
-            uint idleTime = ((uint)Environment.TickCount - lastInputInfo.dwTime);
-            return TimeSpan.FromMilliseconds(idleTime);
-        }
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool CloseDesktop(IntPtr hDesktop);
+
+        private const int WH_KEYBOARD_LL = 13;
+        private const int WH_MOUSE_LL = 14;
+        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_KEYUP = 0x0101;
+        private const int WM_MOUSEMOVE = 0x0200;
+        private const int WM_LBUTTONDOWN = 0x0201;
+        private const int WM_RBUTTONDOWN = 0x0202;
+        private const uint DESKTOP_SWITCHDESKTOP = 0x0100;
+
+        private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+        private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
 
         protected override void Dispose(bool disposing)
         {

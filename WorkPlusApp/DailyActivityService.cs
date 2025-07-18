@@ -13,7 +13,7 @@ namespace WorkPlusApp
         private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
         private readonly string apiUrl = "https://record.corpseed.com/api/saveDailyActivity";
 
-        public async Task SendDailyActivityAsync()
+        public async Task SendDailyActivityAsync(DateTime loginTime)
         {
             try
             {
@@ -23,12 +23,12 @@ namespace WorkPlusApp
                 if (currentTime.Hour >= 19)
                 {
                     WriteLog(Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt"),
-                        $"{DateTime.Now}: After 7 PM IST: Skipping daily activity tracking.");
+                        $"{loginTime:yyyy-MM-dd HH:mm:ss.fff}: After 7 PM IST: Skipping daily activity tracking.");
                     Console.WriteLine("After 7 PM IST: Skipping daily activity tracking.");
                     return;
                 }
 
-                Console.WriteLine("SendDailyActivityAsync started");
+                Console.WriteLine($"SendDailyActivityAsync started at {loginTime:yyyy-MM-dd HH:mm:ss.fff}");
                 string email = "kaushlendra.pratap@corpseed.com"; // Default email
                 if (File.Exists(usernameFile))
                 {
@@ -49,14 +49,15 @@ namespace WorkPlusApp
 
                 string jsonPayload = $@"{{
                     ""email"": ""{email}"",
-                    ""date"": ""{DateTime.Now.ToString("yyyy-MM-dd")}"",
-                    ""loginTime"": ""{DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ssZ")}""
+                    ""date"": ""{loginTime:yyyy-MM-dd}"",
+                    ""loginTime"": ""{loginTime:yyyy-MM-ddTHH:mm:ss.fffZ}""
                 }}";
                 string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
-                await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Daily activity sent - Email: {email}"));
+                await Task.Run(() => WriteLog(logFilePath, $"{loginTime:yyyy-MM-dd HH:mm:ss.fff}: Daily activity sent - Email: {email}"));
 
                 using (var client = new HttpClient())
                 {
+                    client.Timeout = TimeSpan.FromSeconds(30); // Timeout for slow systems
                     var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                     var response = await client.PostAsync(apiUrl, content);
                     Console.WriteLine($"Daily activity API request sent: {jsonPayload}, Status: {response.StatusCode}");
@@ -67,7 +68,7 @@ namespace WorkPlusApp
             {
                 Console.WriteLine($"Error sending daily activity API request: {ex.Message}");
                 string logFilePath = Path.Combine(baseFolder, $"activity_log_{DateTime.Now:yyyyMMdd}.txt");
-                await Task.Run(() => WriteLog(logFilePath, $"{DateTime.Now}: Error sending daily activity: {ex.Message}"));
+                await Task.Run(() => WriteLog(logFilePath, $"{loginTime:yyyy-MM-dd HH:mm:ss.fff}: Error sending daily activity: {ex.Message}"));
             }
         }
 

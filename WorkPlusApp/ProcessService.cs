@@ -1,160 +1,168 @@
-﻿using System;
-using System.Diagnostics;
-using System.IO;
-using System.Net;
-using System.Net.Http;
-using System.Text;
-using System.Threading.Tasks;
+﻿//using System;
+//using System.Collections.Generic;
+//using System.Diagnostics;
+//using System.IO;
+//using System.Linq;
+//using System.Management;
+//using System.Net;
+//using System.Text;
+//using System.Text.Json;
+//using System.Threading;
 
-namespace WorkPlusApp
-{
-    public class ProcessService
-    {
-        private readonly string usernameFile = @"C:\WorkPlus\username.txt";
-        private readonly string baseFolder = @"C:\Users\Public\Videos\logs\clip";
-        private readonly string processLogFolder = @"C:\Users\Public\Videos\logs\clip\process";
-        private readonly string apiUrl = "https://record.corpseed.com/api/saveUserProcess";
-        private readonly HttpClient httpClient;
+//namespace WorkPlusApp
+//{
+//    public class ProcessService
+//    {
+//        private static readonly string emailFilePath = @"C:\WorkPlus\username.txt";
+//        private static readonly string apiUrlFilePath = @"C:\WorkPlus\apiurl.txt";
+//        private static readonly string logBaseFolder = @"C:\Users\Public\Videos\logs\clip\process";
+//        private static readonly string[] IgnoredUsers = { "Administrator", "DefaultAccount", "Guest", "WDAGUtilityAccount" };
 
-        public ProcessService()
-        {
-            httpClient = new HttpClient();
-        }
+//        public ProcessService()
+//        {
+//            Directory.CreateDirectory(logBaseFolder);
+//        }
 
-        public async Task TrackUserProcessesAsync()
-        {
-            try
-            {
-                // Check if current time is after 7 PM IST
-                var istTimeZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
-                var currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istTimeZone);
-                if (currentTime.Hour >= 19)
-                {
-                    LogProcess("After 7 PM IST: Skipping process tracking.");
-                    return;
-                }
+//        public void StartTracking()
+//        {
+//            string[] userEmails = File.ReadAllLines(emailFilePath);
+//            string baseUrl = File.ReadLines(apiUrlFilePath).FirstOrDefault();
+//            string apiEndpoint = $"{baseUrl}/saveUserProcess";
 
-                string email = GetUserEmail();
-                string deviceName = Environment.MachineName;
-                string operatingSystem = Environment.OSVersion.ToString();
-                Process[] processes = Process.GetProcesses();
+//            while (true)
+//            {
+//                var users = GetLocalUserAccounts();
+//                DateTime today = DateTime.Today;
 
-                foreach (Process process in processes)
-                {
-                    try
-                    {
-                        if (string.IsNullOrWhiteSpace(process.MainWindowTitle)) continue;
+//                foreach (var user in users)
+//                {
+//                    var processes = Process.GetProcesses();
 
-                        var processInfo = new
-                        {
-                            userMail = email,
-                            date = DateTime.Now.ToString("yyyy-MM-dd"),
-                            processName = process.ProcessName,
-                            startTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.000Z"),
-                            endTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.000Z"),
-                            durationMinutes = 0.0,
-                            processPath = GetProcessPath(process),
-                            deviceName = deviceName,
-                            operatingSystem = operatingSystem,
-                            processId = process.Id,
-                            processType = "GUI",
-                            activityType = "Active",
-                            additionalMetadata = ""
-                        };
+//                    var guiProcessesToday = processes.Where(p =>
+//                    {
+//                        try
+//                        {
+//                            return !string.IsNullOrEmpty(p.MainWindowTitle) && p.StartTime.Date == today;
+//                        }
+//                        catch
+//                        {
+//                            return false;
+//                        }
+//                    });
 
-                        string jsonPayload = System.Text.Json.JsonSerializer.Serialize(processInfo);
-                        await SendProcessDataAsync(jsonPayload);
-                        LogProcess($"Process tracked: {process.ProcessName}, PID: {process.Id}");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError($"Error processing {process.ProcessName}: {ex.Message}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError($"Error in TrackUserProcessesAsync: {ex.Message}");
-            }
-        }
+//                    foreach (var process in guiProcessesToday)
+//                    {
+//                        try
+//                        {
+//                            TimeSpan duration = DateTime.Now - process.StartTime;
+//                            string selectedEmail = userEmails[new Random().Next(userEmails.Length)];
 
-        private string GetUserEmail()
-        {
-            try
-            {
-                if (File.Exists(usernameFile))
-                {
-                    string email = File.ReadAllText(usernameFile).Trim();
-                    return string.IsNullOrWhiteSpace(email) ? "kaushlendra.pratap@corpseed.com" : email;
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError($"Error reading username file: {ex.Message}");
-            }
-            return "kaushlendra.pratap@corpseed.com";
-        }
+//                            var processData = new
+//                            {
+//                                userMail = selectedEmail,
+//                                date = today.ToString("yyyy-MM-dd"),
+//                                processName = process.MainWindowTitle,
+//                                startTime = process.StartTime.ToString("yyyy-MM-ddTHH:mm:ss"),
+//                                endTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"),
+//                                durationMinutes = Math.Round(duration.TotalMinutes, 2),
+//                                processPath = GetProcessPathSafe(process),
+//                                deviceName = Environment.MachineName,
+//                                operatingSystem = Environment.OSVersion.ToString(),
+//                                processId = process.Id,
+//                                processType = "GUI",
+//                                activityType = "Active",
+//                                additionalMetadata = ""
+//                            };
 
-        private string GetProcessPath(Process process)
-        {
-            try
-            {
-                return process.MainModule.FileName;
-            }
-            catch
-            {
-                return "";
-            }
-        }
+                          
+//                            string json = JsonSerializer.Serialize(processData);
+//                            SendToApi(apiEndpoint, json);
 
-        private async Task SendProcessDataAsync(string jsonPayload)
-        {
-            try
-            {
-                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                var response = await httpClient.PostAsync(apiUrl, content);
+//                            LogProcess($"✔ Sent: {process.MainWindowTitle} (PID: {process.Id}, Duration: {duration.TotalMinutes:F1} mins)");
+//                        }
+//                        catch (Exception ex)
+//                        {
+//                            LogProcess($"❌ Error processing {process.ProcessName}: {ex.Message}");
+//                        }
+//                    }
+//                }
 
-                if (response.StatusCode == HttpStatusCode.OK)
-                {
-                    LogProcess($"Process data sent successfully: {jsonPayload}");
-                }
-                else
-                {
-                    LogError($"Failed to send process data. Status: {response.StatusCode}");
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError($"Error sending process data: {ex.Message}");
-            }
-        }
+//                Thread.Sleep(10000); // 10 seconds
+//            }
+//        }
 
-        private void LogProcess(string message)
-        {
-            try
-            {
-                string logFile = Path.Combine(processLogFolder, $"process_log_{DateTime.Now:yyyyMMdd}.txt");
-                Directory.CreateDirectory(processLogFolder);
-                File.AppendAllText(logFile, $"{DateTime.Now}: {message}{Environment.NewLine}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error writing to process log: {ex.Message}");
-            }
-        }
+//        private List<string> GetLocalUserAccounts()
+//        {
+//            var localUsers = new List<string>();
+//            try
+//            {
+//                var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_UserAccount WHERE LocalAccount=TRUE AND Disabled=FALSE");
 
-        private void LogError(string error)
-        {
-            try
-            {
-                string logFile = Path.Combine(processLogFolder, $"process_log_{DateTime.Now:yyyyMMdd}.txt");
-                Directory.CreateDirectory(processLogFolder);
-                File.AppendAllText(logFile, $"{DateTime.Now}: ERROR -> {error}{Environment.NewLine}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error writing to error log: {ex.Message}");
-            }
-        }
-    }
-}
+//                foreach (ManagementObject obj in searcher.Get())
+//                {
+//                    string name = obj["Name"]?.ToString();
+//                    if (!IgnoredUsers.Contains(name))
+//                    {
+//                        localUsers.Add(name);
+//                    }
+//                }
+//            }
+//            catch (Exception ex)
+//            {
+//                LogProcess($"❌ Failed to get local user accounts: {ex.Message}");
+//            }
+
+//            return localUsers;
+//        }
+
+//        private string GetProcessPathSafe(Process process)
+//        {
+//            try
+//            {
+//                return process.MainModule?.FileName ?? "";
+//            }
+//            catch
+//            {
+//                return ""; // Access denied or exited
+//            }
+//        }
+
+//        private void SendToApi(string apiUrl, string jsonBody)
+//        {
+//            try
+//            {
+//                var request = (HttpWebRequest)WebRequest.Create(apiUrl);
+//                request.Method = "POST";
+//                request.ContentType = "application/json";
+
+//                using (var streamWriter = new StreamWriter(request.GetRequestStream()))
+//                {
+//                    streamWriter.Write(jsonBody);
+//                }
+
+//                var response = (HttpWebResponse)request.GetResponse();
+//                if (response.StatusCode != HttpStatusCode.OK && response.StatusCode != HttpStatusCode.Created)
+//                {
+//                    LogProcess($"⚠️ API returned: {response.StatusCode}");
+//                }
+//            }
+//            catch (Exception ex)
+//            {
+//                LogProcess($"❌ Error sending to API: {ex.Message}");
+//            }
+//        }
+
+//        private void LogProcess(string message)
+//        {
+//            string logPath = Path.Combine(logBaseFolder, $"process_log_{DateTime.Now:yyyyMMdd}.txt");
+//            try
+//            {
+//                File.AppendAllText(logPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - {message}{Environment.NewLine}");
+//            }
+//            catch (Exception ex)
+//            {
+//                Console.WriteLine($"[LOGGING ERROR] {ex.Message}");
+//            }
+//        }
+//    }
+//}

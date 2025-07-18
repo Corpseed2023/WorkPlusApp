@@ -14,7 +14,7 @@ namespace WorkPlusApp
         private readonly string gapLogFolder = @"C:\Users\Public\Videos\logs\clip\gap";
         private readonly string apiUrl = "https://record.corpseed.com/api/gap-track/saveGap";
 
-        public async Task SendGapTrackAsync(string status)
+        public async Task SendGapTrackAsync(string status, DateTime eventTime)
         {
             try
             {
@@ -23,12 +23,12 @@ namespace WorkPlusApp
                 var currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istTimeZone);
                 if (currentTime.Hour >= 19)
                 {
-                    WriteGapLog($"{DateTime.Now}: After 7 PM IST: Skipping gap tracking for status {status.ToUpper()}.");
+                    WriteGapLog($"{eventTime:yyyy-MM-dd HH:mm:ss.fff}: After 7 PM IST: Skipping gap tracking for status {status.ToUpper()}.");
                     Console.WriteLine("After 7 PM IST: Skipping gap tracking.");
                     return;
                 }
 
-                Console.WriteLine("SendGapTrackAsync started");
+                Console.WriteLine($"SendGapTrackAsync started for status {status} at {eventTime:yyyy-MM-dd HH:mm:ss.fff}");
 
                 // Default fallback email
                 string email = "kaushlendra.pratap@corpseed.com";
@@ -54,23 +54,25 @@ namespace WorkPlusApp
 
                 string jsonPayload = $@"{{
                     ""status"": ""{status.ToLower()}"",
-                    ""userEmail"": ""{email}""
+                    ""userEmail"": ""{email}"",
+                    ""eventTime"": ""{eventTime:yyyy-MM-ddTHH:mm:ss.fffZ}""
                 }}";
-
-                string logMessage = $"{DateTime.Now}: GAP TRACK -> {status.ToUpper()} for {email}";
-                WriteGapLog(logMessage);
 
                 using (var client = new HttpClient())
                 {
+                    client.Timeout = TimeSpan.FromSeconds(30); // Timeout for slow systems
                     var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                     var response = await client.PostAsync(apiUrl, content);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        WriteGapLog($"Gap track API failed. Status: {response.StatusCode}");
+                    }
                     Console.WriteLine($"Gap track API sent. Status: {response.StatusCode}");
-                    WriteGapLog($"Gap track API sent. Status: {response.StatusCode}");
                 }
             }
             catch (Exception ex)
             {
-                string errorLog = $"{DateTime.Now}: ERROR sending gap track [{status}] - {ex.Message}";
+                string errorLog = $"{eventTime:yyyy-MM-dd HH:mm:ss.fff}: ERROR sending gap track [{status}] - {ex.Message}";
                 Console.WriteLine(errorLog);
                 WriteGapLog(errorLog);
             }
